@@ -43,6 +43,10 @@ router.get("/", (req, res) => {
 // POST /chat - Main chat endpoint using ChatService
 router.post("/", async (req, res) => {
   try {
+    // Log request for debugging Railway issues
+    console.log("📨 POST /chat - Headers:", req.headers["content-type"]);
+    console.log("📨 POST /chat - Body:", JSON.stringify(req.body));
+
     const { agentId, message, conversationHistory, userId } = req.body;
 
     // Validate required fields
