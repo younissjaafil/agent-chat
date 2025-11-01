@@ -5,7 +5,42 @@ const { pool } = require("../utils/database");
 
 const router = express.Router();
 
-// Simple chat endpoint - POST /api/chat
+// GET /chat - Returns API documentation
+router.get("/", (req, res) => {
+  res.json({
+    success: true,
+    message: "Chat API Endpoint",
+    documentation: {
+      endpoints: [
+        {
+          method: "POST",
+          path: "/chat or /api/chat",
+          description:
+            "Send a message using ChatService (agentId, message, userId)",
+          body: {
+            agentId: "string (required) - Agent ASID",
+            message: "string (required) - User message",
+            userId: "string (optional) - For chat history",
+            conversationHistory: "array (optional) - Previous messages",
+          },
+        },
+        {
+          method: "GET",
+          path: "/api/chat/agents",
+          description: "Get all available agents",
+        },
+        {
+          method: "GET",
+          path: "/api/chat/debug/users-and-instances",
+          description: "Debug: See all users with AI personalities",
+        },
+      ],
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// POST /chat - Main chat endpoint using ChatService
 router.post("/", async (req, res) => {
   try {
     const { agentId, message, conversationHistory, userId } = req.body;
@@ -232,87 +267,6 @@ const generateAIResponse = async (message, agent) => {
     return "I'm sorry, I'm having trouble processing your message right now. Please try again.";
   }
 };
-
-// Update the chat endpoint (fix the SQL query)
-router.post("/", async (req, res) => {
-  try {
-    const { userId, receiverId, text } = req.body;
-
-    // Validate required fields
-    if (!userId || !receiverId || !text) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing required fields: userId, receiverId, text",
-      });
-    }
-
-    // Check if sender exists (userId can be any user)
-    console.log(`Chat request: ${userId} -> ${receiverId}: "${text}"`);
-
-    // Get the receiver's instance and personality data
-    // Remove the i.id reference since it doesn't exist
-    const instanceQuery = `
-      SELECT 
-        i.asid,
-        i.userid as agent_owner,
-        p.name as personality_name,
-        p.trait_array,
-        p.tone,
-        p.asid as personality_asid
-      FROM instances i 
-      JOIN personality p ON i.asid = p.asid 
-      WHERE i.userid = $1
-      LIMIT 1
-    `;
-
-    const instanceResult = await pool.query(instanceQuery, [receiverId]);
-
-    if (instanceResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: `User '${receiverId}' does not have an AI agent/personality to chat with`,
-        hint: "Use /api/chat/debug/users-and-instances to see available agents",
-      });
-    }
-
-    const agent = instanceResult.rows[0];
-
-    // Generate AI response based on personality
-    const aiResponse = await generateAIResponse(text, {
-      name: agent.personality_name,
-      trait_array: agent.trait_array,
-      tone: agent.tone,
-    });
-
-    // Return the chat response (remove instanceId reference)
-    res.json({
-      success: true,
-      data: {
-        conversation: {
-          sender: userId,
-          receiver: receiverId,
-          senderMessage: text,
-          receiverResponse: aiResponse,
-        },
-        agentInfo: {
-          agentOwner: agent.agent_owner,
-          agentName: agent.personality_name,
-          agentTraits: agent.trait_array,
-          agentTone: agent.tone,
-          asid: agent.asid,
-        },
-        timestamp: new Date().toISOString(),
-      },
-    });
-  } catch (error) {
-    console.error("Chat error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal server error",
-      message: error.message,
-    });
-  }
-});
 
 // Fix the debug endpoint (remove the column reference issue)
 router.get("/debug/users-and-instances", async (req, res) => {
