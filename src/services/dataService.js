@@ -19,10 +19,21 @@ class DataService {
   // Get agent by ID (from agents table)
   static async getAgentById(agentId) {
     try {
-      const result = await pool.query(
-        "SELECT * FROM agents WHERE agent_id = $1 OR id = $1",
-        [agentId]
-      );
+      // Check if agentId is a UUID (contains dashes) or an integer
+      const isUUID = typeof agentId === "string" && agentId.includes("-");
+
+      let query, params;
+      if (isUUID) {
+        // Search by agent_id (UUID column)
+        query = "SELECT * FROM agents WHERE agent_id = $1";
+        params = [agentId];
+      } else {
+        // Search by id (integer column) - convert to integer
+        query = "SELECT * FROM agents WHERE id = $1";
+        params = [parseInt(agentId)];
+      }
+
+      const result = await pool.query(query, params);
       return result.rows[0] || null;
     } catch (error) {
       console.error("Error getting agent:", error);
@@ -203,46 +214,119 @@ class DataService {
     }
   }
 
-  // Store a chat message (with encryption)
-  static async storeChatMessage(userId, agentId, text, messageType = "text") {
+  // Store a chat message (using conversations and messages tables)
+  static async storeChatMessage(param1, param2, text, messageType = "text") {
     try {
-      const encryptionService = DataService.getEncryptionService();
+      // Determine which parameter is user and which is agent
+      // User IDs are strings like "s1" or integers
+      // Agent IDs are UUIDs (contain dashes)
+      const param1IsAgent = typeof param1 === "string" && param1.includes("-");
+      const param2IsAgent = typeof param2 === "string" && param2.includes("-");
 
-      // Encrypt the message text before storing
-      const encryptedText = encryptionService.encrypt(text);
+      let userId, agentId, senderType;
 
-      const result = await pool.query(
-        `INSERT INTO chatHistory (user_id, agent_id, text, message_type) 
-         VALUES ($1, $2, $3, $4) 
-         RETURNING *`,
-        [userId, agentId, encryptedText, messageType]
+      if (param1IsAgent) {
+        // param1 is agent, param2 is user - this is an agent response
+        agentId = param1;
+        userId = param2;
+        senderType = "agent";
+      } else {
+        // param1 is user, param2 is agent - this is a user message
+        userId = param1;
+        agentId = param2;
+        senderType = "user";
+      }
+
+      // Convert to integer IDs
+      let userIntId = userId;
+      let agentIntId = agentId;
+
+      // Look up user's integer ID from users table
+      if (typeof userId === "string" && isNaN(userId)) {
+        const userResult = await pool.query(
+          "SELECT id FROM users WHERE user_id = $1",
+          [userId]
+        );
+        if (userResult.rows.length === 0) {
+          console.warn(
+            `User ${userId} not found in users table, skipping message storage`
+          );
+          return null;
+        }
+        userIntId = userResult.rows[0].id;
+      }
+
+      // Look up agent's integer ID
+      if (typeof agentId === "string" && agentId.includes("-")) {
+        const agentResult = await pool.query(
+          "SELECT id FROM agents WHERE agent_id = $1",
+          [agentId]
+        );
+        if (agentResult.rows.length === 0) {
+          console.warn(`Agent ${agentId} not found, skipping message storage`);
+          return null;
+        }
+        agentIntId = agentResult.rows[0].id;
+      }
+
+      // Find or create conversation
+      let conversationId;
+
+      const existingConv = await pool.query(
+        `SELECT conversation_id FROM conversations 
+         WHERE user_id = $1 AND agent_id = $2 
+         LIMIT 1`,
+        [userIntId, agentIntId]
       );
 
-      // Return the result with decrypted text for immediate use
-      const storedMessage = result.rows[0];
-      storedMessage.text = text; // Return original unencrypted text
+      if (existingConv.rows.length > 0) {
+        conversationId = existingConv.rows[0].conversation_id;
+      } else {
+        // Create new conversation
+        const newConv = await pool.query(
+          `INSERT INTO conversations (user_id, agent_id, title) 
+           VALUES ($1, $2, $3) 
+           RETURNING conversation_id`,
+          [userIntId, agentIntId, "Chat Session"]
+        );
+        conversationId = newConv.rows[0].conversation_id;
+      }
 
-      return storedMessage;
+      // Store message in messages table
+      const result = await pool.query(
+        `INSERT INTO messages (conversation_id, sender_type, content) 
+         VALUES ($1, $2, $3) 
+         RETURNING *`,
+        [conversationId, senderType, text]
+      );
+
+      return result.rows[0];
     } catch (error) {
       console.error("Error storing chat message:", error);
-      throw error;
+      return null;
     }
   }
 
-  // Get chat history between user and agent (with decryption)
+  // Get chat history between user and agent (using conversations and messages)
   static async getChatHistory(userId, agentId, limit = 50, offset = 0) {
     try {
       const result = await pool.query(
-        `SELECT * FROM chatHistory 
-         WHERE (user_id = $1 AND agent_id = $2) 
-            OR (user_id = $2 AND agent_id = $1)
-         ORDER BY timestamp DESC 
+        `SELECT m.*, c.user_id, c.agent_id 
+         FROM messages m
+         JOIN conversations c ON m.conversation_id = c.conversation_id
+         WHERE c.user_id = $1 AND c.agent_id = $2
+         ORDER BY m.created_at DESC 
          LIMIT $3 OFFSET $4`,
         [userId, agentId, limit, offset]
       );
 
-      // Decrypt messages before returning
-      return DataService.decryptMessages(result.rows);
+      // Format messages to match expected structure
+      return result.rows.map((row) => ({
+        role: row.sender_type === "user" ? "user" : "assistant",
+        content: row.content,
+        timestamp: row.created_at,
+        isUser: row.sender_type === "user",
+      }));
     } catch (error) {
       console.error("Error getting chat history:", error);
       throw error;
@@ -268,24 +352,63 @@ class DataService {
     }
   }
 
-  // Get latest messages for a conversation (with decryption)
+  // Get latest messages for a conversation (using conversations and messages)
   static async getLatestMessages(userId, agentId, count = 10) {
     try {
+      // Convert string IDs to integer IDs for database lookup
+      let userIntId = userId;
+      let agentIntId = agentId;
+
+      // If userId is a string, look up the user's integer ID
+      if (typeof userId === "string" && isNaN(userId)) {
+        const userResult = await pool.query(
+          "SELECT id FROM users WHERE user_id = $1",
+          [userId]
+        );
+        if (userResult.rows.length === 0) {
+          console.warn(`User ${userId} not found, returning empty history`);
+          return [];
+        }
+        userIntId = userResult.rows[0].id;
+      }
+
+      // If agentId is a UUID, look up the agent's integer ID
+      if (typeof agentId === "string" && agentId.includes("-")) {
+        const agentResult = await pool.query(
+          "SELECT id FROM agents WHERE agent_id = $1",
+          [agentId]
+        );
+        if (agentResult.rows.length === 0) {
+          console.warn(`Agent ${agentId} not found, returning empty history`);
+          return [];
+        }
+        agentIntId = agentResult.rows[0].id;
+      }
+
       const result = await pool.query(
-        `SELECT * FROM chatHistory 
-         WHERE (user_id = $1 AND agent_id = $2) 
-            OR (user_id = $2 AND agent_id = $1)
-         ORDER BY timestamp DESC 
+        `SELECT m.*, c.user_id, c.agent_id 
+         FROM messages m
+         JOIN conversations c ON m.conversation_id = c.conversation_id
+         WHERE c.user_id = $1 AND c.agent_id = $2
+         ORDER BY m.created_at DESC 
          LIMIT $3`,
-        [userId, agentId, count]
+        [userIntId, agentIntId, count]
       );
 
-      // Decrypt messages and return in chronological order
-      const decryptedMessages = DataService.decryptMessages(result.rows);
-      return decryptedMessages.reverse(); // Return in chronological order
+      // Format and return in chronological order (oldest first)
+      return result.rows.reverse().map((row) => ({
+        role: row.sender_type === "user" ? "user" : "assistant",
+        content: row.content,
+        text: row.content, // Legacy compatibility
+        timestamp: row.created_at,
+        isUser: row.sender_type === "user",
+        user_id: row.sender_type === "user" ? row.user_id : row.agent_id,
+        agent_id: row.sender_type === "agent" ? row.agent_id : row.user_id,
+      }));
     } catch (error) {
       console.error("Error getting latest messages:", error);
-      throw error;
+      // Return empty array instead of throwing to not break chat
+      return [];
     }
   }
 
@@ -305,29 +428,43 @@ class DataService {
     }
   }
 
-  // Get chat history for v1/chai/getHistory endpoint
+  // Get chat history for v1/chai/getHistory endpoint (using conversations and messages)
   static async getChaiChatHistory(userId, agentId, limit = 50, offset = 0) {
     try {
       const result = await pool.query(
         `SELECT 
-          id,
-          user_id,
-          agent_id,
-          text,
-          timestamp,
-          message_type
-         FROM chatHistory 
-         WHERE (user_id = $1 AND agent_id = $2) 
-            OR (user_id = $2 AND agent_id = $1)
-         ORDER BY timestamp DESC 
+          m.id,
+          m.conversation_id,
+          m.sender_type,
+          m.content,
+          m.created_at as timestamp,
+          c.user_id,
+          c.agent_id
+         FROM messages m
+         JOIN conversations c ON m.conversation_id = c.conversation_id
+         WHERE c.user_id = $1 AND c.agent_id = $2
+         ORDER BY m.created_at DESC 
          LIMIT $3 OFFSET $4`,
         [userId, agentId, limit, offset]
       );
 
+      // Format messages to match expected structure
+      const formattedMessages = result.rows.map((row) => ({
+        id: row.id,
+        user_id: row.sender_type === "user" ? row.user_id : row.agent_id,
+        agent_id: row.sender_type === "agent" ? row.agent_id : row.user_id,
+        text: row.content,
+        content: row.content,
+        timestamp: row.timestamp,
+        message_type: "text",
+        role: row.sender_type === "user" ? "user" : "assistant",
+        isUser: row.sender_type === "user",
+      }));
+
       return {
-        messages: result.rows,
-        totalCount: result.rows.length,
-        hasMore: result.rows.length === limit,
+        messages: formattedMessages,
+        totalCount: formattedMessages.length,
+        hasMore: formattedMessages.length === limit,
       };
     } catch (error) {
       console.error("Error getting chai chat history:", error);

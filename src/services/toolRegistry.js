@@ -5,6 +5,7 @@
 
 const axios = require("axios");
 const DataService = require("./dataService");
+const TrainingService = require("./trainingService");
 
 class Tool {
   constructor(name, description, parameters, func) {
@@ -19,6 +20,7 @@ class ToolRegistry {
   constructor(knowledgeBase = null) {
     this.tools = {};
     this.knowledgeBase = knowledgeBase;
+    this.trainingService = new TrainingService();
     this._registerTools();
     console.log("🛠️ Tools registered!");
   }
@@ -377,90 +379,53 @@ class ToolRegistry {
     }
   }
 
-  // Knowledge Base Search Method
+  // Knowledge Base Search Method - Now uses agent_id with Training Service API
   async _searchKnowledgeBase(query, documentTypes = [], limit = 5) {
     try {
-      if (!process.env.TEACH_AI_URL || !process.env.TEACH_SECRET) {
-        console.log("Knowledge base service not configured");
-        return "Knowledge base search is not available at the moment.";
+      // Use current agent context if available
+      const agentId = this.currentAgentId || null;
+
+      if (!agentId) {
+        console.log("⚠️ No agent ID provided for knowledge base search");
+        return "Knowledge base search requires an agent context.";
       }
 
-      const teachAiUrl = process.env.TEACH_AI_URL;
-      const authToken = process.env.TEACH_SECRET;
+      console.log(`🔍 Searching knowledge base for agent: ${agentId}`);
+      console.log(`📝 Query: "${query}"`);
 
-      // Default to current user context if available
-      const userId = this.currentUserId || "default_user";
-
-      const searchPayload = {
-        query: query,
-        limit: limit,
-        threshold: 0.7,
-        includeContent: true,
-      };
-
-      if (documentTypes && documentTypes.length > 0) {
-        searchPayload.documentTypes = documentTypes;
-      }
-
-      console.log(`🔍 Searching knowledge base for: "${query}"`);
-
-      const response = await axios.post(
-        `${teachAiUrl}/v1/tai/teach/search/${userId}`,
-        searchPayload,
+      // Search using Training Service with agent_id
+      const searchResult = await this.trainingService.searchKnowledgeBase(
+        agentId,
+        query,
         {
-          headers: {
-            Authorization: `Bearer ${authToken}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 15000,
+          limit: limit,
+          threshold: 0.7,
+          documentTypes:
+            documentTypes && documentTypes.length > 0
+              ? documentTypes
+              : undefined,
         }
       );
 
-      if (response.status === 200 && response.data.success) {
-        const results = response.data.results || [];
+      if (searchResult.success && searchResult.results.length > 0) {
+        console.log(
+          `✅ Found ${searchResult.resultsCount} results from knowledge base`
+        );
 
-        if (results.length === 0) {
-          return "No relevant information found in your knowledge base for this query.";
-        }
-
-        // Format the results for the AI agent
-        let knowledgeContent = `Found ${results.length} relevant document(s) from your knowledge base:\n\n`;
-
-        results.forEach((result, index) => {
-          const docInfo = result.document || {};
-          const score = (result.score * 100).toFixed(1);
-
-          knowledgeContent += `📄 **Document ${index + 1}**: ${
-            docInfo.name || "Unknown"
-          }\n`;
-          knowledgeContent += `📊 **Relevance**: ${score}%\n`;
-          knowledgeContent += `📝 **Content**: ${
-            result.chunk || "No content available"
-          }\n`;
-
-          if (docInfo.type) {
-            knowledgeContent += `📁 **Type**: ${docInfo.type}\n`;
-          }
-
-          if (docInfo.uploadedAt) {
-            const uploadDate = new Date(
-              docInfo.uploadedAt
-            ).toLocaleDateString();
-            knowledgeContent += `📅 **Uploaded**: ${uploadDate}\n`;
-          }
-
-          knowledgeContent += `\n${"=".repeat(50)}\n\n`;
-        });
-
-        return knowledgeContent;
+        // Format results using TrainingService formatter
+        return this.trainingService.formatResultsForAI(searchResult.results);
       }
 
-      return "Unable to search knowledge base at the moment.";
+      if (!searchResult.success) {
+        console.log(`⚠️ Knowledge base search failed: ${searchResult.error}`);
+      }
+
+      return "No relevant information found in your knowledge base for this query.";
     } catch (error) {
       console.error("Knowledge base search error:", error.message);
 
       if (error.response?.status === 404) {
-        return "No knowledge base found for your account. You can upload documents, videos, or audio files to create your personal knowledge base.";
+        return "No knowledge base found for this agent. You can upload documents to create a knowledge base.";
       }
 
       if (error.response?.status === 401) {
@@ -476,8 +441,9 @@ class ToolRegistry {
     try {
       let contextInfo = "";
 
-      // Set current user context for knowledge base searches
+      // Set current user and agent context for tool usage
       this.currentUserId = userId;
+      this.currentAgentId = agentId;
 
       // Check chat history first for personal/conversational queries
       if (userId && agentId) {
@@ -491,7 +457,7 @@ class ToolRegistry {
         }
       }
 
-      // Check user's personal knowledge base first (RAG microservice)
+      // Check agent's knowledge base first (Training Service API)
       const needsKnowledgeSearch =
         /tell me about|explain|what is|how to|tutorial|document|guide|learn|teach|help me with/i.test(
           userInput
@@ -500,8 +466,8 @@ class ToolRegistry {
           userInput
         );
 
-      if (needsKnowledgeSearch && userId) {
-        console.log("🔍 Checking user's knowledge base first...");
+      if (needsKnowledgeSearch && agentId) {
+        console.log("🔍 Checking agent's knowledge base first...");
         const knowledgeInfo = await this._searchKnowledgeBase(userInput);
         if (
           knowledgeInfo &&
@@ -509,7 +475,7 @@ class ToolRegistry {
           !knowledgeInfo.includes("not available") &&
           !knowledgeInfo.includes("temporarily unavailable")
         ) {
-          contextInfo += `From your personal knowledge base:\n${knowledgeInfo}\n`;
+          contextInfo += `From agent's knowledge base:\n${knowledgeInfo}\n`;
         }
       }
 

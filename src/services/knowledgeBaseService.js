@@ -1,10 +1,11 @@
 require("dotenv").config();
 const AWS = require("aws-sdk");
 const pdf = require("pdf-parse");
+const TrainingService = require("./trainingService");
 
 class KnowledgeBaseService {
   constructor() {
-    // Configure AWS SDK for Selectel Cloud S3
+    // Configure AWS SDK for Selectel Cloud S3 (fallback)
     this.s3 = new AWS.S3({
       accessKeyId: process.env.S3_ACCESS_KEY,
       secretAccessKey: process.env.S3_SECRET_KEY,
@@ -17,6 +18,9 @@ class KnowledgeBaseService {
     this.bucketName = process.env.S3_BUCKET_NAME;
     this.cache = new Map(); // Simple in-memory cache
     this.cacheTimeout = 30 * 60 * 1000; // 30 minutes
+
+    // Initialize Training Service for primary knowledge base
+    this.trainingService = new TrainingService();
   }
 
   // Search for relevant knowledge files based on query
@@ -135,7 +139,50 @@ class KnowledgeBaseService {
     try {
       console.log(`🧠 Getting knowledge for query: "${query}" (asid: ${asid})`);
 
-      // Search for relevant files
+      // Try Training Service API first (primary knowledge base)
+      if (asid) {
+        console.log("🔍 Checking Training Service API first...");
+        const trainingResult = await this.trainingService.searchKnowledgeBase(
+          asid,
+          query,
+          {
+            limit: maxFiles,
+            threshold: 0.7,
+          }
+        );
+
+        if (trainingResult.success && trainingResult.results.length > 0) {
+          console.log(
+            `✅ Found ${trainingResult.resultsCount} results from Training Service`
+          );
+
+          // Format results for AI consumption
+          const formattedContent = this.trainingService.formatResultsForAI(
+            trainingResult.results
+          );
+
+          const sources = trainingResult.results.map((result) => ({
+            file: result.document?.name || "Unknown",
+            type: result.document?.type || "unknown",
+            score: result.score,
+            documentId: result.documentId,
+          }));
+
+          return {
+            found: true,
+            content: formattedContent,
+            sources: sources,
+            fileCount: trainingResult.resultsCount,
+            source: "training_service",
+          };
+        }
+
+        console.log(
+          "📭 No results from Training Service, falling back to S3..."
+        );
+      }
+
+      // Fallback to S3 if Training Service fails or returns no results
       const relevantFiles = await this.searchKnowledgeFiles(query, asid);
 
       if (relevantFiles.length === 0) {
@@ -200,6 +247,7 @@ class KnowledgeBaseService {
         content: combinedContent,
         sources: sources,
         fileCount: knowledgeContent.length,
+        source: "s3_fallback",
       };
     } catch (error) {
       console.error("❌ Error getting knowledge for query:", error);
