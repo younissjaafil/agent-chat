@@ -10,6 +10,7 @@ const chaiRoutes = require("./routes/chai");
 const voiceRoutes = require("./routes/voice");
 const historyRoutes = require("./routes/history");
 const trainingRoutes = require("./routes/training");
+const agentsRoutes = require("./routes/agents");
 
 const app = express();
 
@@ -54,12 +55,14 @@ pool.query("SELECT NOW()", (err, res) => {
 // Routes
 app.use("/api/chat", chatRoutes);
 app.use("/api/data", dataRoutes);
+app.use("/api/agents", agentsRoutes);
 app.use("/v1/chai", chaiRoutes);
 app.use("/train", trainingRoutes);
 
 // Direct endpoints as requested
 app.use("/chat", chatRoutes);
 app.use("/voice", voiceRoutes);
+app.use("/agents", agentsRoutes);
 app.use("/getHistory", historyRoutes);
 
 app.get("/status", (req, res) =>
