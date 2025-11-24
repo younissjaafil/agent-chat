@@ -60,9 +60,16 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     console.log(`📤 Uploading document for agent: ${finalAgentId}`);
     console.log(`📄 File: ${req.file.originalname}`);
 
-    const options = {};
-    if (chunkSize) options.chunkSize = parseInt(chunkSize);
-    if (overlap) options.overlap = parseInt(overlap);
+    // Fix chunking: Default to 1000 chars per chunk, 200 overlap
+    // This prevents 202 tiny chunks (avg 22 chars) and creates proper 5-15 chunks
+    const options = {
+      chunkSize: chunkSize ? parseInt(chunkSize) : 1000,
+      overlap: overlap ? parseInt(overlap) : 200,
+    };
+
+    console.log(
+      `⚙️ Chunking config: chunkSize=${options.chunkSize}, overlap=${options.overlap}`
+    );
 
     const result = await trainingService.uploadDocument(
       finalAgentId,
@@ -92,6 +99,100 @@ router.post("/upload", upload.single("file"), async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message,
+    });
+  }
+});
+
+/**
+ * POST /train/debug/search
+ * Debug endpoint: Return raw vector matches with full metadata
+ * Use this to verify retrieval works before checking chat integration
+ */
+router.post("/debug/search", async (req, res) => {
+  try {
+    const { agent_id, agentId, query, topK = 5, threshold = 0.5 } = req.body;
+
+    const finalAgentId = agent_id || agentId;
+
+    if (!finalAgentId) {
+      return res.status(400).json({
+        success: false,
+        error: "agent_id or agentId is required",
+      });
+    }
+
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: "query is required",
+      });
+    }
+
+    console.log(`🔍 [DEBUG] Searching for agent: ${finalAgentId}`);
+    console.log(`🔍 [DEBUG] Query: "${query}"`);
+    console.log(`🔍 [DEBUG] TopK: ${topK}, Threshold: ${threshold}`);
+
+    const result = await trainingService.searchKnowledgeBase(
+      finalAgentId,
+      query,
+      {
+        limit: parseInt(topK),
+        threshold: parseFloat(threshold),
+      }
+    );
+
+    // Return raw matches with full debug info
+    const debugResponse = {
+      success: result.success,
+      query: query,
+      agentId: finalAgentId,
+      topK: parseInt(topK),
+      threshold: parseFloat(threshold),
+      matchesFound: result.resultsCount || 0,
+      matches: (result.results || []).map((match, idx) => ({
+        rank: idx + 1,
+        score: match.score,
+        scorePercentage: (match.score * 100).toFixed(1) + "%",
+        text: match.chunk || "",
+        textPreview: (match.chunk || "").substring(0, 200) + "...",
+        metadata: {
+          agentId: finalAgentId,
+          documentId: match.documentId,
+          documentName: match.document?.name,
+          documentType: match.document?.type,
+        },
+      })),
+      avgScore:
+        result.results?.length > 0
+          ? (
+              result.results.reduce((sum, r) => sum + r.score, 0) /
+              result.results.length
+            ).toFixed(3)
+          : 0,
+      interpretation:
+        result.results?.length > 0
+          ? result.results[0].score >= 0.7
+            ? "EXCELLENT MATCH"
+            : result.results[0].score >= 0.6
+            ? "GOOD MATCH"
+            : result.results[0].score >= 0.5
+            ? "MODERATE MATCH"
+            : "WEAK MATCH"
+          : "NO MATCHES",
+      error: result.error || null,
+    };
+
+    console.log(
+      `✅ [DEBUG] Found ${debugResponse.matchesFound} matches with avg score ${debugResponse.avgScore}`
+    );
+
+    res.json(debugResponse);
+  } catch (error) {
+    console.error("❌ [DEBUG] Search error:", error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
 });

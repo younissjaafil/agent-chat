@@ -63,9 +63,25 @@ class ChatService {
         console.log(
           `✅ Found knowledge from ${knowledgeResult.fileCount} ${knowledgeResult.source}`
         );
+
+        // DEBUG: Log actual retrieved chunks to verify content
+        console.log("📄 [RAG DEBUG] Retrieved chunks preview:");
+        if (knowledgeResult.sources && knowledgeResult.sources.length > 0) {
+          knowledgeResult.sources.forEach((source, idx) => {
+            console.log(
+              `  ${idx + 1}. ${source.file} (score: ${
+                source.score?.toFixed(3) || "N/A"
+              })`
+            );
+          });
+        }
+        console.log("📝 [RAG DEBUG] Content preview (first 300 chars):");
+        console.log(knowledgeResult.content.substring(0, 300) + "...");
+
         knowledgeContext = `\n\n=== KNOWLEDGE BASE (${knowledgeResult.source}) ===\n${knowledgeResult.content}\n\nUse the above information to answer questions when relevant. Cite sources.\n`;
       } else {
         console.log("📭 No relevant knowledge found in knowledge base");
+        console.log(`📭 Reason: ${knowledgeResult.message || "Unknown"}`);
       }
 
       // Process query with tools (switcher logic) - now includes chat history analysis
@@ -179,6 +195,17 @@ class ChatService {
     prompt += `- You're helpful, engaging, and stay in character\n`;
     prompt += `- You have access to live data through various tools for current information\n\n`;
 
+    // Add STRICT RAG instructions if knowledge base context is provided
+    if (toolContext && toolContext.includes("=== KNOWLEDGE BASE")) {
+      prompt += `CRITICAL INSTRUCTIONS FOR ANSWERING QUESTIONS:\n`;
+      prompt += `1. You MUST answer ONLY using the information provided in the KNOWLEDGE BASE section below\n`;
+      prompt += `2. If the KNOWLEDGE BASE contains relevant information, use it and cite the source\n`;
+      prompt += `3. If the KNOWLEDGE BASE does NOT contain the answer, respond with:\n`;
+      prompt += `   "I don't have that information in my knowledge base yet. Please upload relevant documents."\n`;
+      prompt += `4. DO NOT invent, guess, or use general knowledge for questions about this agent's documents\n`;
+      prompt += `5. Be precise and factual - every claim must be backed by the provided context\n\n`;
+    }
+
     // Add tool context if available
     if (toolContext && toolContext.trim()) {
       prompt += `Current live information available to you:\n${toolContext}\n`;
@@ -204,6 +231,10 @@ class ChatService {
 
       // Add tool context even for default agent
       if (toolContext && toolContext.trim()) {
+        // Add strict RAG instructions for default agent too
+        if (toolContext.includes("=== KNOWLEDGE BASE")) {
+          prompt += `\n\nCRITICAL: Answer ONLY using the KNOWLEDGE BASE information provided. If the answer is not in the knowledge base, say "I don't have that information in my knowledge base yet." Do NOT make up information.\n`;
+        }
         prompt += `\n\nCurrent live information available to you:\n${toolContext}\n`;
         prompt += `Use this live information to provide accurate, up-to-date responses when relevant.`;
       }
@@ -237,7 +268,7 @@ class ChatService {
         model: "gpt-4o", // You can change this to "gpt-3.5-turbo" for lower costs
         messages: messages,
         max_tokens: 300,
-        temperature: 0.7,
+        temperature: 0.1, // Low temperature for factual, precise RAG responses (was 0.7)
       });
 
       if (!response.choices || response.choices.length === 0) {
