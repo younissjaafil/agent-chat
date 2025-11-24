@@ -457,44 +457,9 @@ class ToolRegistry {
         }
       }
 
-      // Check agent's knowledge base first (Training Service API)
-      const needsKnowledgeSearch =
-        /tell me about|explain|what is|how to|tutorial|document|guide|learn|teach|help me with/i.test(
-          userInput
-        ) ||
-        /my documents|my files|my knowledge|uploaded|document|pdf|video|audio/i.test(
-          userInput
-        );
-
-      if (needsKnowledgeSearch && agentId) {
-        console.log("🔍 Checking agent's knowledge base first...");
-        const knowledgeInfo = await this._searchKnowledgeBase(userInput);
-        if (
-          knowledgeInfo &&
-          !knowledgeInfo.includes("No relevant information found") &&
-          !knowledgeInfo.includes("not available") &&
-          !knowledgeInfo.includes("temporarily unavailable")
-        ) {
-          contextInfo += `From agent's knowledge base:\n${knowledgeInfo}\n`;
-        }
-      }
-
-      // Use legacy knowledge base if available (fallback)
-      if (this.knowledgeBase && !contextInfo) {
-        const knowledgeResults = await this.knowledgeBase.searchKnowledge(
-          userInput,
-          { nResults: 3 }
-        );
-        if (knowledgeResults && knowledgeResults.length > 0) {
-          contextInfo += `From ${
-            instance.personality_name || "AI"
-          }'s knowledge base:\n`;
-          knowledgeResults.forEach((result) => {
-            contextInfo += `- ${result.content.substring(0, 200)}...\n`;
-          });
-          contextInfo += "\n";
-        }
-      }
+      // Knowledge base search is now handled in ChatService.generateResponse()
+      // This ensures better integration and avoids duplicate searches
+      // ToolRegistry focuses on live data tools (crypto, news, weather, web search)
 
       // Tool detection logic
       const needsCrypto =

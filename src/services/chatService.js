@@ -48,6 +48,26 @@ class ChatService {
       // Get tool registry instance
       const chatService = ChatService.getInstance();
 
+      // Search knowledge base FIRST for maximum relevance
+      console.log("🧠 Searching knowledge base for relevant information...");
+      const knowledgeResult =
+        await chatService.knowledgeBase.getKnowledgeForQuery(
+          userMessage,
+          agentId,
+          5 // Max 5 chunks with real OpenAI embeddings (higher quality results)
+        );
+
+      // Build knowledge context string
+      let knowledgeContext = "";
+      if (knowledgeResult.found) {
+        console.log(
+          `✅ Found knowledge from ${knowledgeResult.fileCount} ${knowledgeResult.source}`
+        );
+        knowledgeContext = `\n\n=== KNOWLEDGE BASE (${knowledgeResult.source}) ===\n${knowledgeResult.content}\n\nUse the above information to answer questions when relevant. Cite sources.\n`;
+      } else {
+        console.log("📭 No relevant knowledge found in knowledge base");
+      }
+
       // Process query with tools (switcher logic) - now includes chat history analysis
       const toolContext = await chatService.toolRegistry.processQuery(
         userMessage,
@@ -56,27 +76,11 @@ class ChatService {
         agentId
       );
 
-      // Search knowledge base for relevant information
-      console.log("🧠 Searching knowledge base for relevant information...");
-      const knowledgeResult =
-        await chatService.knowledgeBase.getKnowledgeForQuery(
-          userMessage,
-          agentId,
-          2 // Max 2 files to keep context manageable
-        );
+      // Combine knowledge and tool context
+      const combinedContext = knowledgeContext + toolContext;
 
-      // Build system prompt from agent/personality data
-      let systemPrompt = this.buildSystemPrompt(agent, toolContext);
-
-      // Add knowledge base context to system prompt if found
-      if (knowledgeResult.found) {
-        console.log(
-          `✅ Found knowledge from ${knowledgeResult.fileCount} files`
-        );
-        systemPrompt += `\n\n=== KNOWLEDGE BASE CONTEXT ===\n${knowledgeResult.content}\n\nUse the above information from the knowledge base to answer questions when relevant. Always cite your sources when using knowledge base information.`;
-      } else {
-        console.log("📭 No relevant knowledge found in knowledge base");
-      }
+      // Build system prompt from agent/personality data with combined context
+      let systemPrompt = this.buildSystemPrompt(agent, combinedContext);
 
       // Build conversation context
       const messages = [{ role: "system", content: systemPrompt }];

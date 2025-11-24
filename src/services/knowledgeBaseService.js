@@ -139,21 +139,27 @@ class KnowledgeBaseService {
     try {
       console.log(`🧠 Getting knowledge for query: "${query}" (asid: ${asid})`);
 
-      // Try Training Service API first (primary knowledge base)
+      // Try Training Service API first (primary knowledge base with embeddings/RAG)
       if (asid) {
-        console.log("🔍 Checking Training Service API first...");
+        console.log("🔍 Checking Training Service RAG API first...");
         const trainingResult = await this.trainingService.searchKnowledgeBase(
           asid,
           query,
           {
             limit: maxFiles,
-            threshold: 0.7,
+            threshold: 0.5, // Real OpenAI embeddings: 0.5 is good default (0.6-0.95 for relevant content)
           }
         );
 
+        console.log(`📊 Training Service Response:`, {
+          success: trainingResult.success,
+          resultsCount: trainingResult.resultsCount,
+          error: trainingResult.error,
+        });
+
         if (trainingResult.success && trainingResult.results.length > 0) {
           console.log(
-            `✅ Found ${trainingResult.resultsCount} results from Training Service`
+            `✅ Found ${trainingResult.resultsCount} results from Training Service RAG`
           );
 
           // Format results for AI consumption
@@ -173,13 +179,29 @@ class KnowledgeBaseService {
             content: formattedContent,
             sources: sources,
             fileCount: trainingResult.resultsCount,
-            source: "training_service",
+            source: "training_service_rag",
           };
         }
 
         console.log(
-          "📭 No results from Training Service, falling back to S3..."
+          `⚠️ Training Service returned no results. Error: ${
+            trainingResult.error || "None"
+          }`
         );
+        console.log(
+          "📭 Skipping S3 fallback - Training Service is the authoritative knowledge base"
+        );
+
+        return {
+          found: false,
+          message: `No relevant knowledge found in agent's knowledge base. ${
+            trainingResult.error
+              ? "Error: " + trainingResult.error
+              : "Try uploading documents first."
+          }`,
+          sources: [],
+          source: "training_service_rag",
+        };
       }
 
       // Fallback to S3 if Training Service fails or returns no results

@@ -11,6 +11,10 @@ class TrainingService {
     this.baseUrl =
       process.env.TRAIN_API_URL || "https://train-agent.vercel.app";
     this.timeout = 30000; // 30 seconds for training operations
+
+    console.log(
+      `🔧 TrainingService initialized with base URL: ${this.baseUrl}`
+    );
   }
 
   /**
@@ -105,14 +109,27 @@ class TrainingService {
       );
 
       if (response.data && response.data.success) {
+        const results = response.data.results || [];
         console.log(
           `✅ Found ${
             response.data.resultsCount || 0
           } results for agent ${agentId}`
         );
+
+        // Log embedding quality indicators
+        if (results.length > 0) {
+          const avgScore =
+            results.reduce((sum, r) => sum + r.score, 0) / results.length;
+          console.log(
+            `📊 Average similarity score: ${avgScore.toFixed(
+              3
+            )} (Real embeddings: 0.6-0.95, Mock: 0.4-0.6)`
+          );
+        }
+
         return {
           success: true,
-          results: response.data.results || [],
+          results: results,
           resultsCount: response.data.resultsCount || 0,
           query: response.data.query,
         };
@@ -126,12 +143,24 @@ class TrainingService {
       };
     } catch (error) {
       console.error("❌ Knowledge base search error:", error.message);
+
+      // Provide more detailed error information
+      const errorDetails = {
+        message: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        url: `${this.baseUrl}/train/search`,
+      };
+
+      console.error("📋 Error details:", errorDetails);
+
       return {
         success: false,
         results: [],
         resultsCount: 0,
         error: error.message,
-        details: error.response?.data,
+        details: errorDetails,
       };
     }
   }
@@ -278,20 +307,24 @@ class TrainingService {
       return "";
     }
 
-    let formattedText = `Found ${results.length} relevant document(s) from knowledge base:\n\n`;
+    let formattedText = `Found ${results.length} relevant document(s) from knowledge base (using OpenAI embeddings):\n\n`;
 
     results.forEach((result, index) => {
       const score = (result.score * 100).toFixed(1);
+      const confidenceLevel =
+        result.score >= 0.75 ? "High" : result.score >= 0.6 ? "Medium" : "Low";
       const docName = result.document?.name || "Unknown document";
       const docType = result.document?.type || "unknown";
       const chunk = result.chunk || "";
 
-      formattedText += `📄 Document ${index + 1}: ${docName}\n`;
-      formattedText += `📊 Relevance: ${score}%\n`;
+      formattedText += `📄 Source ${index + 1}: ${docName}\n`;
+      formattedText += `📊 Relevance: ${score}% (${confidenceLevel} confidence)\n`;
       formattedText += `📁 Type: ${docType}\n`;
-      formattedText += `📝 Content: ${chunk}\n`;
+      formattedText += `📝 Content:\n${chunk}\n`;
       formattedText += `${"=".repeat(50)}\n\n`;
     });
+
+    formattedText += `Note: Cite these sources when using this information in your response.\n`;
 
     return formattedText;
   }
