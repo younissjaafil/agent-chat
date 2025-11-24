@@ -11,14 +11,12 @@ router.get("/", async (req, res) => {
     console.log("📋 Fetching all available agents...");
 
     // Query agents table directly without requiring is_active column
-    const result = await pool.query(
-      "SELECT * FROM agents ORDER BY name"
-    );
+    const result = await pool.query("SELECT * FROM agents ORDER BY name");
 
     // Format agents
     const formattedAgents = result.rows.map((agent) => ({
       id: agent.id,
-      agentId: agent.id.toString(), // Use integer ID as agentId
+      agentId: agent.agent_id, // Use UUID agent_id from database
       name: agent.name,
       personalityName: agent.personality_name,
       description: agent.description,
@@ -52,7 +50,7 @@ router.get("/", async (req, res) => {
 
 /**
  * GET /agents/:agentId - Get a specific agent by ID
- * Supports integer IDs only
+ * Supports UUID agent_id or integer ID for backward compatibility
  */
 router.get("/:agentId", async (req, res) => {
   try {
@@ -60,22 +58,32 @@ router.get("/:agentId", async (req, res) => {
 
     console.log(`🔍 Fetching agent with ID: ${agentId}`);
 
-    // Parse the agentId as integer
-    const agentIdInt = parseInt(agentId);
-    
-    if (isNaN(agentIdInt)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid agent ID. Must be a number.",
-        timestamp: new Date().toISOString(),
-      });
-    }
+    // Try to determine if it's a UUID or integer ID
+    const isUUID =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        agentId
+      );
 
-    // Query the agents table
-    const result = await pool.query(
-      "SELECT * FROM agents WHERE id = $1",
-      [agentIdInt]
-    );
+    let result;
+    if (isUUID) {
+      // Query by UUID agent_id
+      result = await pool.query("SELECT * FROM agents WHERE agent_id = $1", [
+        agentId,
+      ]);
+    } else {
+      // Try integer ID for backward compatibility
+      const agentIdInt = parseInt(agentId);
+      if (isNaN(agentIdInt)) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid agent ID. Must be a UUID or number.",
+          timestamp: new Date().toISOString(),
+        });
+      }
+      result = await pool.query("SELECT * FROM agents WHERE id = $1", [
+        agentIdInt,
+      ]);
+    }
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -90,7 +98,7 @@ router.get("/:agentId", async (req, res) => {
     // Format the response
     const formattedAgent = {
       id: agent.id,
-      agentId: agent.id.toString(),
+      agentId: agent.agent_id, // Use UUID agent_id from database
       name: agent.name,
       personalityName: agent.personality_name,
       description: agent.description,
