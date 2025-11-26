@@ -428,6 +428,302 @@ class DataService {
     }
   }
 
+  // === PAYMENT METHODS ===
+
+  /**
+   * Get pricing info for an agent (checks both agents and personality tables)
+   * @param {string} agentId - Agent UUID or personality asid
+   * @returns {Promise<{role: string, priceAmount: number, priceCurrency: string, name: string} | null>}
+   */
+  static async getAgentPricing(agentId) {
+    try {
+      // First check agents table (UUID lookup)
+      const isUUID = typeof agentId === "string" && agentId.includes("-");
+
+      if (isUUID) {
+        const agentResult = await pool.query(
+          `SELECT name, role, price_amount, price_currency 
+           FROM agents WHERE agent_id = $1`,
+          [agentId]
+        );
+        if (agentResult.rows.length > 0) {
+          const agent = agentResult.rows[0];
+          return {
+            role: agent.role || "free",
+            priceAmount: parseFloat(agent.price_amount) || 0,
+            priceCurrency: agent.price_currency || "USD",
+            name: agent.name,
+          };
+        }
+      }
+
+      // Then check personality table (asid lookup)
+      const personalityResult = await pool.query(
+        `SELECT name, role, price_amount, price_currency 
+         FROM personality WHERE asid = $1`,
+        [agentId]
+      );
+      if (personalityResult.rows.length > 0) {
+        const personality = personalityResult.rows[0];
+        return {
+          role: personality.role || "free",
+          priceAmount: parseFloat(personality.price_amount) || 0,
+          priceCurrency: personality.price_currency || "USD",
+          name: personality.name,
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error("Error getting agent pricing:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if user has paid for agent access
+   * @param {string} userId - User ID
+   * @param {string} agentId - Agent UUID or asid
+   * @returns {Promise<boolean>}
+   */
+  static async hasUserPaidForAgent(userId, agentId) {
+    try {
+      const result = await pool.query(
+        `SELECT id FROM agent_payments 
+         WHERE user_id = $1 AND agent_id = $2 AND status = 'success'
+         LIMIT 1`,
+        [userId, agentId]
+      );
+      return result.rows.length > 0;
+    } catch (error) {
+      console.error("Error checking user payment:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get user's active payment for an agent
+   * @param {string} userId - User ID
+   * @param {string} agentId - Agent UUID or asid
+   * @returns {Promise<Object | null>}
+   */
+  static async getUserAgentPayment(userId, agentId) {
+    try {
+      const result = await pool.query(
+        `SELECT * FROM agent_payments 
+         WHERE user_id = $1 AND agent_id = $2 
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [userId, agentId]
+      );
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error("Error getting user agent payment:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a new payment record
+   * @param {Object} paymentData - Payment data
+   * @returns {Promise<Object>} Created payment record
+   */
+  static async createPaymentRecord({
+    userId,
+    agentId,
+    externalId,
+    amount,
+    currency = "USD",
+    collectUrl = null,
+    metadata = {},
+  }) {
+    try {
+      const result = await pool.query(
+        `INSERT INTO agent_payments 
+         (user_id, agent_id, external_id, amount, currency, collect_url, status, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+         RETURNING *`,
+        [
+          userId,
+          agentId,
+          externalId,
+          amount,
+          currency.toUpperCase(),
+          collectUrl,
+          JSON.stringify(metadata),
+        ]
+      );
+      return result.rows[0];
+    } catch (error) {
+      console.error("Error creating payment record:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update payment status after webhook callback
+   * @param {string} externalId - External payment ID
+   * @param {string} status - New status ('success', 'failed', 'refunded')
+   * @param {Object} additionalData - Additional data to update
+   * @returns {Promise<Object | null>}
+   */
+  static async updatePaymentStatus(externalId, status, additionalData = {}) {
+    try {
+      const { payerPhone, metadata } = additionalData;
+
+      let query = `
+        UPDATE agent_payments 
+        SET status = $1, updated_at = CURRENT_TIMESTAMP
+      `;
+      const params = [status];
+      let paramIndex = 2;
+
+      if (status === "success") {
+        query += `, paid_at = CURRENT_TIMESTAMP`;
+      }
+
+      if (payerPhone) {
+        query += `, payer_phone = $${paramIndex}`;
+        params.push(payerPhone);
+        paramIndex++;
+      }
+
+      if (metadata) {
+        query += `, metadata = metadata || $${paramIndex}::jsonb`;
+        params.push(JSON.stringify(metadata));
+        paramIndex++;
+      }
+
+      query += ` WHERE external_id = $${paramIndex} RETURNING *`;
+      params.push(externalId.toString());
+
+      const result = await pool.query(query, params);
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error("Error updating payment status:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get payment by external ID
+   * @param {string} externalId - External payment ID
+   * @returns {Promise<Object | null>}
+   */
+  static async getPaymentByExternalId(externalId) {
+    try {
+      const result = await pool.query(
+        `SELECT * FROM agent_payments WHERE external_id = $1`,
+        [externalId.toString()]
+      );
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error("Error getting payment by external ID:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all payments for a user
+   * @param {string} userId - User ID
+   * @param {number} limit - Max records to return
+   * @returns {Promise<Array>}
+   */
+  static async getUserPayments(userId, limit = 50) {
+    try {
+      const result = await pool.query(
+        `SELECT p.*, 
+                COALESCE(a.name, per.name) as agent_name
+         FROM agent_payments p
+         LEFT JOIN agents a ON p.agent_id = a.agent_id::text
+         LEFT JOIN personality per ON p.agent_id = per.asid
+         WHERE p.user_id = $1
+         ORDER BY p.created_at DESC
+         LIMIT $2`,
+        [userId, limit]
+      );
+      return result.rows;
+    } catch (error) {
+      console.error("Error getting user payments:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if user has access to a paid agent (combines pricing check + payment check)
+   * @param {string} userId - User ID
+   * @param {string} agentId - Agent UUID or asid
+   * @returns {Promise<{allowed: boolean, requiresPayment: boolean, pricing: Object | null}>}
+   */
+  static async checkAgentAccess(userId, agentId) {
+    try {
+      // Get agent pricing info
+      const pricing = await DataService.getAgentPricing(agentId);
+
+      // If agent not found or is free, allow access
+      if (!pricing || pricing.role === "free" || !pricing.priceAmount) {
+        return {
+          allowed: true,
+          requiresPayment: false,
+          pricing: pricing,
+        };
+      }
+
+      // Agent is paid, check if user has completed payment
+      const hasPaid = await DataService.hasUserPaidForAgent(userId, agentId);
+
+      return {
+        allowed: hasPaid,
+        requiresPayment: !hasPaid,
+        pricing: pricing,
+      };
+    } catch (error) {
+      console.error("Error checking agent access:", error);
+      // On error, default to allowing access to prevent blocking users
+      return {
+        allowed: true,
+        requiresPayment: false,
+        pricing: null,
+      };
+    }
+  }
+
+  /**
+   * Update agent pricing (for admin use)
+   * @param {string} agentId - Agent UUID or asid
+   * @param {Object} pricingData - {role, priceAmount, priceCurrency}
+   * @returns {Promise<boolean>}
+   */
+  static async updateAgentPricing(
+    agentId,
+    { role, priceAmount, priceCurrency }
+  ) {
+    try {
+      const isUUID = typeof agentId === "string" && agentId.includes("-");
+
+      if (isUUID) {
+        await pool.query(
+          `UPDATE agents 
+           SET role = $1, price_amount = $2, price_currency = $3, updated_at = CURRENT_TIMESTAMP
+           WHERE agent_id = $4`,
+          [role, priceAmount, priceCurrency, agentId]
+        );
+      } else {
+        await pool.query(
+          `UPDATE personality 
+           SET role = $1, price_amount = $2, price_currency = $3, updated_at = CURRENT_TIMESTAMP
+           WHERE asid = $4`,
+          [role, priceAmount, priceCurrency, agentId]
+        );
+      }
+
+      return true;
+    } catch (error) {
+      console.error("Error updating agent pricing:", error);
+      throw error;
+    }
+  }
+
   // Get chat history for v1/chai/getHistory endpoint (using conversations and messages)
   static async getChaiChatHistory(userId, agentId, limit = 50, offset = 0) {
     try {

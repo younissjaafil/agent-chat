@@ -6,7 +6,8 @@
     "start": "node src/server.js",
     "db:setup": "node database/setup.js",
     "db:setup-additional": "node database/setup-additional.js",
-    "db:setup-all": "node database/setup.js && node database/setup-additional.js",
+    "db:setup-payments": "node database/setup-payments.js",
+    "db:setup-all": "node database/setup.js && node database/setup-additional.js && node database/setup-payments.js",
     "db:add-agent-uuid": "node database/add-agent-uuid.js",
     "test:agents": "node tests/test-agents-api.js"
   },

@@ -3,9 +3,49 @@ const router = express.Router();
 const DataService = require("../services/dataService");
 const ChatService = require("../services/chatService");
 const { MiniMaxTTSService } = require("../services/miniMaxTTSService");
+const PaymentService = require("../services/paymentService");
 
 // Initialize TTS service
 const ttsService = new MiniMaxTTSService();
+
+/**
+ * Helper function to check if user has access to a paid agent
+ * Returns null if access is allowed, or an error response object if payment is required
+ */
+async function checkPaymentAccess(userId, agentId) {
+  try {
+    const access = await DataService.checkAgentAccess(userId, agentId);
+
+    if (!access.allowed && access.requiresPayment) {
+      return {
+        success: false,
+        error: "Payment required",
+        requiresPayment: true,
+        pricing: {
+          agentId,
+          name: access.pricing?.name,
+          amount: access.pricing?.priceAmount,
+          currency: access.pricing?.priceCurrency,
+          formattedPrice: PaymentService.formatPrice(
+            access.pricing?.priceAmount,
+            access.pricing?.priceCurrency
+          ),
+        },
+        message: `This agent requires payment of ${PaymentService.formatPrice(
+          access.pricing?.priceAmount,
+          access.pricing?.priceCurrency
+        )} to access. Please complete payment first.`,
+        paymentUrl: `/api/agents/${agentId}/payment/create`,
+      };
+    }
+
+    return null; // Access allowed
+  } catch (error) {
+    console.error("Error checking payment access:", error);
+    // On error, allow access to prevent blocking users
+    return null;
+  }
+}
 
 // GET /v1/chai/getHistory - Get chat history between user and AI agent
 router.get("/getHistory", async (req, res) => {
@@ -78,6 +118,14 @@ router.post("/chat", async (req, res) => {
     console.log(
       `💬 Text chat request from user ${userId} for agent ${agentId}`
     );
+
+    // Check payment access for paid agents
+    const paymentRequired = await checkPaymentAccess(userId, agentId);
+    if (paymentRequired) {
+      console.log(`💰 Payment required for agent ${agentId}`);
+      return res.status(402).json(paymentRequired);
+    }
+
     console.log(`📝 Message: ${message}`);
 
     // Get conversation history for context
@@ -192,6 +240,14 @@ router.post("/voice", async (req, res) => {
     }
 
     console.log(`🎤 Voice chat request from ${userId} for agent ${asid}`);
+
+    // Check payment access for paid agents
+    const paymentRequired = await checkPaymentAccess(userId, asid);
+    if (paymentRequired) {
+      console.log(`💰 Payment required for agent ${asid}`);
+      return res.status(402).json(paymentRequired);
+    }
+
     console.log(`📝 Message: ${message}`);
 
     // Generate text response using ChatService (without conversation history for voice)

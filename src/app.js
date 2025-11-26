@@ -11,6 +11,7 @@ const voiceRoutes = require("./routes/voice");
 const historyRoutes = require("./routes/history");
 const trainingRoutes = require("./routes/training");
 const agentsRoutes = require("./routes/agents");
+const paymentsRoutes = require("./routes/payments");
 
 const app = express();
 
@@ -56,6 +57,7 @@ pool.query("SELECT NOW()", (err, res) => {
 app.use("/api/chat", chatRoutes);
 app.use("/api/data", dataRoutes);
 app.use("/api/agents", agentsRoutes);
+app.use("/api/payments", paymentsRoutes);
 app.use("/v1/chai", chaiRoutes);
 app.use("/train", trainingRoutes);
 
