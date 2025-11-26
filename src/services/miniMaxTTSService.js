@@ -217,14 +217,15 @@ class MiniMaxTTSService {
 
       // Try multiple possible table structures
       const queries = [
-        // Query instances table (current structure based on screenshots)
+        // Query personality table first (has creator_id column)
+        `SELECT creator_id FROM personality WHERE asid = $1 LIMIT 1`,
+
+        // Query agents table (also has creator_id column)
+        `SELECT creator_id FROM agents WHERE agent_id = $1 LIMIT 1`,
+
+        // Fallback: Query instances table (userid = student who chats, not creator)
+        // This is a fallback for legacy data where creator might be linked via instances
         `SELECT userid as creator_id FROM instances WHERE asid = $1 LIMIT 1`,
-
-        // Query ai_agents table (if it exists)
-        `SELECT creator_id, created_by FROM ai_agents WHERE agent_id = $1 OR agent_name = $1 LIMIT 1`,
-
-        // Query personality table to get associated asid
-        `SELECT asid FROM personality WHERE asid = $1 LIMIT 1`,
       ];
 
       for (const query of queries) {
@@ -232,10 +233,7 @@ class MiniMaxTTSService {
           const result = await pool.query(query, [agentId]);
 
           if (result.rows.length > 0) {
-            const creator =
-              result.rows[0].creator_id ||
-              result.rows[0].created_by ||
-              result.rows[0].userid;
+            const creator = result.rows[0].creator_id;
             if (creator) {
               console.log(`✅ Found creator for agent ${agentId}: ${creator}`);
               return creator;

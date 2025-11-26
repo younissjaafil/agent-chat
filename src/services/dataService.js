@@ -97,6 +97,20 @@ class DataService {
     }
   }
 
+  // Get all personalities created by a specific user (creator/instructor)
+  static async getPersonalitiesByCreator(creatorId) {
+    try {
+      const result = await pool.query(
+        "SELECT * FROM personality WHERE creator_id = $1 ORDER BY created_at DESC",
+        [creatorId]
+      );
+      return result.rows;
+    } catch (error) {
+      console.error("Error getting personalities by creator:", error);
+      throw error;
+    }
+  }
+
   // Get instance data by ID
   static async getInstanceById(instanceId) {
     try {
